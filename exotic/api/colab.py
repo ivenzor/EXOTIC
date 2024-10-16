@@ -59,7 +59,7 @@ from barycorrpy import utc_tdb
 from bokeh.palettes import Viridis256
 from bokeh.plotting import figure, output_file, show
 from bokeh.models import BoxZoomTool, ColorBar, FreehandDrawTool, HoverTool, LinearColorMapper, LogColorMapper, \
-  LogTicker, PanTool, ResetTool, WheelZoomTool
+  LogTicker, PanTool, ResetTool, WheelZoomTool, CustomJS, ColumnDataSource, Title
 # import copy
 from io import BytesIO
 from IPython.display import display, HTML
@@ -77,62 +77,100 @@ import time
 
 
 def display_image(filename):
-    #print(f"{filename}")
-    hdu = fits.open(filename)
-
-    extension = 0
-    image_header = hdu[extension].header
-    while image_header["NAXIS"] == 0:
-      extension += 1
-      image_header = hdu[extension].header
-
-    dheader = dict(hdu[extension].header)
-  
-    data = hdu[extension].data
-    megapixel_factor = (data.shape[0])*(data.shape[1])/1000000.0
-    if megapixel_factor > 5:
-      print(f"Downsampling image because it has {megapixel_factor} megapixels.")
-      image_downscaled = downscale_local_mean(data, (2, 2)).astype(int)
-      data = image_downscaled
+    """
+    Display a FITS image using Bokeh, downscaling to MAX_MEGAPIXELS megapixels. 
+    The downsampling will help loading times on Google Colab versions of EXOTIC, e.g. when locating target and comparison stars.
+    Original pixel coordinates are shown on hover.
     
-    max_y = len(data)
-    max_x = len(data[0])
-    p_height = 500
-    p_width = int((p_height/max_y) * max_x)
+    Args:
+    filename (str): Path to the FITS file
+    
+    Returns:
+    None
+    """
 
-    # quick hot pixel/ cosmic ray mask
-    # mask, cdata = detect_cosmics(
-    #     data, psfmodel='gauss',
-    #     psffwhm=4, psfsize=2*round(4)+1, # just a guess
-    #     sepmed=False, sigclip = 4.25,
-    #     niter=3, objlim=10, cleantype='idw', verbose=False
-    # )
+    MAX_MEGAPIXELS = 0.5			#the image will be downsampled if it exceeds this value
+    MAX_DISPLAY_DIMENSION = 500		#for the aspect ratio when showing the image
+    
+    with fits.open(filename) as hdu:
+        extension = 0
+        while hdu[extension].header["NAXIS"] == 0:
+            extension += 1
+        
+        original_data = hdu[extension].data
+        original_shape = original_data.shape
+        megapixels = (original_shape[0] * original_shape[1]) / 1_000_000
 
-    # create a figure with text on mouse hover
-    fig = figure(tooltips=[("x", "$x"), ("y", "$y"), ("value", "@image")], width=p_width, height=p_height,
-        tools=[PanTool(),BoxZoomTool(),WheelZoomTool(),ResetTool(),HoverTool()])
-    fig.x_range.range_padding = fig.y_range.range_padding = 0
+        if megapixels > MAX_MEGAPIXELS:
+            scale_factor = np.sqrt(MAX_MEGAPIXELS / megapixels)
+            new_shape = tuple(int(dim * scale_factor) for dim in original_shape)
+            print(f"Downsampling image from {megapixels:.2f} MP to {MAX_MEGAPIXELS} MP")
+            data = resize(original_data, new_shape, preserve_range=True).astype(original_data.dtype)
+            downsampled = True
+        else:
+            data = original_data
+            scale_factor = 1.0
+            downsampled = False
 
-    r = fig.multi_line('x', 'y', source={'x':[],'y':[]},color='white',line_width=3)
-    fig.add_tools(FreehandDrawTool(renderers=[r]))
+        aspect_ratio = data.shape[1] / data.shape[0]
+        if aspect_ratio > 1:  # width > height
+            p_width = MAX_DISPLAY_DIMENSION
+            p_height = int(p_width / aspect_ratio)
+        else:  # height >= width
+            p_height = MAX_DISPLAY_DIMENSION
+            p_width = int(p_height * aspect_ratio)
 
-    # set up a colobar + data range
-    color_mapper = LogColorMapper(palette="Cividis256", low=np.percentile(data, 55), high=np.percentile(data, 99))
+        # Create coordinate arrays to keep track of where each pixel came from in the original image in case we downsampled the image
+        y, x = np.mgrid[0:original_shape[0], 0:original_shape[1]]
+        
+        # Resize coordinate arrays if image was downsampled
+        if downsampled:
+            y = resize(y, new_shape, preserve_range=True).astype(int)
+            x = resize(x, new_shape, preserve_range=True).astype(int)
 
-    # must give a vector of image data for image parameter
-    fig.image(
-        image=[data],
-          x=0, y=0, dw=hdu[extension].data.shape[1], dh=hdu[extension].data.shape[0],
-          level="image", color_mapper=color_mapper
-    )
-    fig.grid.grid_line_width = 0.5
+        # Create ColumnDataSource: image data + original coordinate information for each pixel
+        source = ColumnDataSource(data=dict(
+            image=[data],
+            x=[0], y=[0],
+            dw=[data.shape[1]], dh=[data.shape[0]],
+            orig_x=[x],
+            orig_y=[y]
+        ))
 
-    color_bar = ColorBar(color_mapper=color_mapper, ticker=LogTicker(),
-                         label_standoff=12, border_line_color=None, location=(0,0))
+        # Custom HoverTool to show original coordinates even if the image has been downsampled
+        hover = HoverTool(tooltips=[
+            ("Original x", "@orig_x"),
+            ("Original y", "@orig_y"),
+            ("value", "@image")
+        ])
 
-    fig.add_layout(color_bar, 'right')
+        fig = figure(width=p_width, height=p_height,
+                     tools=[PanTool(), BoxZoomTool(), WheelZoomTool(), ResetTool(), hover])
+        fig.x_range.range_padding = fig.y_range.range_padding = 0
 
-    show(fig)
+        # Add title indicating downsampling status
+        if downsampled:
+            fig.title = Title(text=f"Downsampled Image (Original: {megapixels:.2f} MP, Current: {MAX_MEGAPIXELS} MP)", align="center")
+        else:
+            fig.title = Title(text=f"Original Image ({megapixels:.2f} MP)", align="center")
+
+        r = fig.multi_line('x', 'y', source={'x':[], 'y':[]}, color='white', line_width=3)
+        fig.add_tools(FreehandDrawTool(renderers=[r]))
+
+        color_mapper = LogColorMapper(palette="Cividis256", 
+                                      low=np.percentile(data, 55), 
+                                      high=np.percentile(data, 99))
+
+        fig.image(image='image', x='x', y='y', dw='dw', dh='dh',
+                  source=source, color_mapper=color_mapper)
+        fig.grid.grid_line_width = 0.5
+
+        color_bar = ColorBar(color_mapper=color_mapper, ticker=LogTicker(),
+                             label_standoff=12, border_line_color=None, location=(0,0))
+
+        fig.add_layout(color_bar, 'right')
+
+        show(fig)
 
 #########################################################
 
