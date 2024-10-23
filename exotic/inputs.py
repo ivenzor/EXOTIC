@@ -504,34 +504,59 @@ def target_star_coords(coords, planet):
 
     return coords
 
-
+MAX_COMPARISON_STARS = 20
+MIN_COMPARISON_STARS = 1
 def comparison_star_coords(comp_stars, rt_bool):
-    if isinstance(comp_stars, list) and 1 <= len(comp_stars) <= 10 and \
+    """
+    Process and validate comparison stars.
+    Args:
+        comp_stars: List of coordinate pairs or string containing coordinates. Limited to MAX_COMPARISON_STARS pairs.
+        rt_bool: Boolean indicating if in real-time mode
+    Returns:
+        List of validated coordinate pairs, with a maximum of MAX_COMPARISON_STARS pairs.
+        In real-time mode (rt_bool=True), returns a single coordinate pair.
+    Notes:
+        - Input coordinates can be provided as a list of [x,y] pairs or as a string containing coordinate numbers
+        - If no valid coordinates are provided or if the number of comparison stars exceed MAX_COMPARISON_STARS,
+          prompts user for manual input.
+        - Number of comparison stars must be between MIN_COMPARISON_STARS and MAX_COMPARISON_STARS
+    """
+    # Handle list input
+    if isinstance(comp_stars, list) and MIN_COMPARISON_STARS <= len(comp_stars) <= MAX_COMPARISON_STARS and \
             all(isinstance(star, list) for star in comp_stars):
         comp_stars = [star for star in comp_stars if star != []]
+    # Handle string input
     elif isinstance(comp_stars, str) and any(str.isdigit(x) for x in comp_stars):
         comp_stars = re.findall(r"[-+]?(?:\d*\.?\d+)", comp_stars)
         comp_stars = [int(float(comp_star)) for comp_star in comp_stars]
         comp_stars = [comp_stars[i:i+2] for i in range(0, len(comp_stars), 2)]
+        # Validation for string input to respect max comparison stars
+        if len(comp_stars) > MAX_COMPARISON_STARS:
+            log_info(f"\nWarning: Number of comparison stars exceeded {MAX_COMPARISON_STARS}. Extra stars will be ignored.", error=True)
+            comp_stars = comp_stars[:MAX_COMPARISON_STARS]
+    # Handle invalid or empty input
     else:
         comp_stars = []
 
+    # Get user input for invalid or empty input
     if not comp_stars:
         while True:
             if not rt_bool:
-                num_comp_stars = user_input("\nHow many Comparison Stars would you like to use? (1-10): ", type_=int)
-                if 1 <= num_comp_stars <= 10:
+                num_comp_stars = user_input(f"\nHow many Comparison Stars would you like to use? ({MIN_COMPARISON_STARS}-{MAX_COMPARISON_STARS}): ", type_=int)
+                if MIN_COMPARISON_STARS <= num_comp_stars <= MAX_COMPARISON_STARS:
                     break
                 log_info("\nError: The number of Comparison Stars entered is incorrect.", error=True)
             else:
                 num_comp_stars = 1
                 break
 
+        # Collect coordinates for each star
         for num in range(num_comp_stars):
             x_pix = user_input(f"\nComparison Star {num + 1} X Pixel Coordinate: ", type_=int)
             y_pix = user_input(f"Comparison Star {num + 1} Y Pixel Coordinate: ", type_=int)
             comp_stars.append([x_pix, y_pix])
 
+    # Handle real-time mode
     if rt_bool and isinstance(comp_stars[0], list):
         comp_stars = comp_stars[0]
 
