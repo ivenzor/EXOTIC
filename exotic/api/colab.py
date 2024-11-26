@@ -76,63 +76,412 @@ from skimage.transform import rescale, resize, downscale_local_mean
 import time
 
 
+from bokeh.plotting import figure, show
+import numpy as np
+from astropy.io import fits
+from skimage.transform import resize
+from bokeh.models import (ColumnDataSource, LogColorMapper, HoverTool, CustomJS, 
+                         Button, Div, FreehandDrawTool, Slider, PanTool, 
+                         BoxZoomTool, WheelZoomTool, ResetTool)
+from bokeh.layouts import column, row
+
 def display_image(filename):
-    #print(f"{filename}")
-    hdu = fits.open(filename)
-
-    extension = 0
-    image_header = hdu[extension].header
-    while image_header["NAXIS"] == 0:
-      extension += 1
-      image_header = hdu[extension].header
-
-    dheader = dict(hdu[extension].header)
-  
-    data = hdu[extension].data
-    megapixel_factor = (data.shape[0])*(data.shape[1])/1000000.0
-    if megapixel_factor > 5:
-      print(f"Downsampling image because it has {megapixel_factor} megapixels.")
-      image_downscaled = downscale_local_mean(data, (2, 2)).astype(int)
-      data = image_downscaled
+    """
+    Downsampling if needed with options to flip and rotate while maintaining original coordinates.
+    """
+    MAX_MEGAPIXELS = 1.0
+    MAX_DISPLAY_DIMENSION = 500
     
-    max_y = len(data)
-    max_x = len(data[0])
-    p_height = 500
-    p_width = int((p_height/max_y) * max_x)
+    with fits.open(filename) as hdu:
+        extension = 0
+        while hdu[extension].header["NAXIS"] == 0:
+            extension += 1
+        
+        original_data = hdu[extension].data
+        original_shape = original_data.shape
+        megapixels = (original_shape[0] * original_shape[1]) / 1_000_000
 
-    # quick hot pixel/ cosmic ray mask
-    # mask, cdata = detect_cosmics(
-    #     data, psfmodel='gauss',
-    #     psffwhm=4, psfsize=2*round(4)+1, # just a guess
-    #     sepmed=False, sigclip = 4.25,
-    #     niter=3, objlim=10, cleantype='idw', verbose=False
-    # )
+        if megapixels > MAX_MEGAPIXELS:
+            scale_factor = np.sqrt(MAX_MEGAPIXELS / megapixels)
+            new_shape = tuple(int(dim * scale_factor) for dim in original_shape)
+            print(f"Downsampling image from {megapixels:.2f} MP to {MAX_MEGAPIXELS} MP")
+            data = resize(original_data, new_shape, preserve_range=True).astype(original_data.dtype)
+            scale_y = original_shape[0] / new_shape[0]
+            scale_x = original_shape[1] / new_shape[1]
+        else:
+            data = original_data.copy()
+            scale_y = 1
+            scale_x = 1
 
-    # create a figure with text on mouse hover
-    fig = figure(tooltips=[("x", "$x"), ("y", "$y"), ("value", "@image")], width=p_width, height=p_height,
-        tools=[PanTool(),BoxZoomTool(),WheelZoomTool(),ResetTool(),HoverTool()])
-    fig.x_range.range_padding = fig.y_range.range_padding = 0
+    # Create all rotated versions
+    data_rot90 = np.rot90(data)
+    data_rot180 = np.rot90(data, 2)
+    data_rot270 = np.rot90(data, 3)
 
-    r = fig.multi_line('x', 'y', source={'x':[],'y':[]},color='white',line_width=3)
+    h, w = data.shape
+    y_coords, x_coords = np.mgrid[0:h, 0:w]
+    orig_x = (x_coords * scale_x).astype(int)
+    orig_y = (y_coords * scale_y).astype(int)
+
+    # Store coordinates as 1D arrays
+    orig_x_flat = orig_x.ravel()
+    orig_y_flat = orig_y.ravel()
+    values_flat = data.ravel()
+
+    # Create coordinate mappings for each transformation
+    coord_versions = {
+        0: {
+            'normal': (orig_x, orig_y),
+            'h': (np.fliplr(orig_x), orig_y),
+            'v': (orig_x, np.flipud(orig_y)),
+            'hv': (np.fliplr(orig_x), np.flipud(orig_y))
+        },
+        90: {
+            'normal': (np.rot90(orig_x), np.rot90(orig_y)),
+            'h': (np.fliplr(np.rot90(orig_x)), np.rot90(orig_y)),
+            'v': (np.rot90(orig_x), np.flipud(np.rot90(orig_y))),
+            'hv': (np.fliplr(np.rot90(orig_x)), np.flipud(np.rot90(orig_y)))
+        },
+        180: {
+            'normal': (np.rot90(orig_x, 2), np.rot90(orig_y, 2)),
+            'h': (np.fliplr(np.rot90(orig_x, 2)), np.rot90(orig_y, 2)),
+            'v': (np.rot90(orig_x, 2), np.flipud(np.rot90(orig_y, 2))),
+            'hv': (np.fliplr(np.rot90(orig_x, 2)), np.flipud(np.rot90(orig_y, 2)))
+        },
+        270: {
+            'normal': (np.rot90(orig_x, 3), np.rot90(orig_y, 3)),
+            'h': (np.fliplr(np.rot90(orig_x, 3)), np.rot90(orig_y, 3)),
+            'v': (np.rot90(orig_x, 3), np.flipud(np.rot90(orig_y, 3))),
+            'hv': (np.fliplr(np.rot90(orig_x, 3)), np.flipud(np.rot90(orig_y, 3)))
+        }
+    }
+
+    # Pre-compute all flipped versions for each rotation
+    flipped_versions = {
+        0: {
+            'normal': data,
+            'h': np.fliplr(data),
+            'v': np.flipud(data),
+            'hv': np.flipud(np.fliplr(data))
+        },
+        90: {
+            'normal': data_rot90,
+            'h': np.fliplr(data_rot90),
+            'v': np.flipud(data_rot90),
+            'hv': np.flipud(np.fliplr(data_rot90))
+        },
+        180: {
+            'normal': data_rot180,
+            'h': np.fliplr(data_rot180),
+            'v': np.flipud(data_rot180),
+            'hv': np.flipud(np.fliplr(data_rot180))
+        },
+        270: {
+            'normal': data_rot270,
+            'h': np.fliplr(data_rot270),
+            'v': np.flipud(data_rot270),
+            'hv': np.flipud(np.fliplr(data_rot270))
+        }
+    }
+
+    # Pre-calculate percentile values
+    lower_percentiles = np.arange(0, 95, 1)
+    upper_percentiles = np.arange(95, 100.1, 0.1)
+    percentiles = np.concatenate([lower_percentiles, upper_percentiles])
+    percentile_values = np.percentile(data, percentiles)
+    slider_to_idx = np.linspace(0, len(percentile_values)-1, 101).astype(int)
+    
+    initial_low_percentile = 55
+    initial_high_percentile = 99
+    initial_low_idx = slider_to_idx[initial_low_percentile]
+    initial_high_idx = slider_to_idx[initial_high_percentile]
+    initial_low = percentile_values[initial_low_idx]
+    initial_high = percentile_values[initial_high_idx]
+
+    color_mapper = LogColorMapper(palette="Cividis256", 
+                                low=initial_low,
+                                high=initial_high)
+
+    source = ColumnDataSource(data={
+        'image': [data],
+        'x': [0],
+        'y': [0],
+        'dw': [original_shape[1]],
+        'dh': [original_shape[0]],
+        'flip_h': [False],
+        'flip_v': [False],
+        'rotation': [0],
+        'scale_x': [scale_x],
+        'scale_y': [scale_y],
+        'percentile_values': [percentile_values.tolist()],
+        'slider_to_idx': [slider_to_idx.tolist()],
+        'orig_x_coords': [orig_x],
+        'orig_y_coords': [orig_y]
+    })
+
+    # Add all versions to source
+    for angle in [0, 90, 180, 270]:
+        for flip_type in ['normal', 'h', 'v', 'hv']:
+            key = f'rot{angle}_{flip_type}'
+            source.data[key] = [flipped_versions[angle][flip_type]]
+            source.data[f'{key}_x'] = [coord_versions[angle][flip_type][0]]
+            source.data[f'{key}_y'] = [coord_versions[angle][flip_type][1]]
+
+    get_orig_coords = CustomJS(code="""
+        const cb_data = cb_obj.geometryData;
+        if (!cb_data) return null;
+        
+        let x = Math.floor(cb_data.x);
+        let y = Math.floor(cb_data.y);
+        const w = source.data.width[0];
+        const h = source.data.height[0];
+        const rot = source.data.rotation[0];
+        const flip_h = source.data.flip_h[0];
+        const flip_v = source.data.flip_v[0];
+        const scale_x = source.data.scale_x[0];
+        const scale_y = source.data.scale_y[0];
+        
+        // Transform coordinates based on current state
+        // First handle flips
+        if (flip_h) {
+            x = w - x - 1;
+        }
+        if (flip_v) {
+            y = h - y - 1;
+        }
+        
+        // Then handle rotation
+        let tx = x;
+        let ty = y;
+        
+        if (rot === 90) {
+            x = h - ty - 1;
+            y = tx;
+        } else if (rot === 180) {
+            x = w - tx - 1;
+            y = h - ty - 1;
+        } else if (rot === 270) {
+            x = ty;
+            y = w - tx - 1;
+        }
+        
+        // Calculate index in flattened array
+        const idx = y * w + x;
+        
+        // Get original coordinates
+        const origX = x * scale_x;
+        const origY = y * scale_y;
+        const value = source.data.values[0][idx];
+        
+        return {
+            x: Math.round(origX),
+            y: Math.round(origY),
+            value: value
+        };
+    """)
+
+    hover = HoverTool(
+        tooltips=[
+            ("Original x", "@orig_x_coords{0}"),
+            ("Original y", "@orig_y_coords{0}"),
+            ("Value", "@image")
+        ],
+        mode='mouse',
+        point_policy='snap_to_data'
+    )
+
+    aspect_ratio = data.shape[1] / data.shape[0]
+    if aspect_ratio > 1:
+        p_width = MAX_DISPLAY_DIMENSION
+        p_height = int(p_width / aspect_ratio)
+    else:
+        p_height = MAX_DISPLAY_DIMENSION
+        p_width = int(p_height * aspect_ratio)
+
+    fig = figure(width=p_width, height=p_height,
+                tools=[PanTool(), BoxZoomTool(), WheelZoomTool(), ResetTool(), hover],
+                x_range=(0, original_shape[1]),
+                y_range=(0, original_shape[0]))
+
+    if megapixels > MAX_MEGAPIXELS:
+        fig.title.text = f"Downsampled Image (Original: {megapixels:.2f} MP, Current: {MAX_MEGAPIXELS} MP)"
+    else:
+        fig.title.text = f"Original Image ({megapixels:.2f} MP)"
+    
+    fig.image(image='image', x='x', y='y', dw='dw', dh='dh',
+              source=source, color_mapper=color_mapper)
+
+    r = fig.multi_line('x', 'y', source={'x':[], 'y':[]}, color='white', line_width=3)
     fig.add_tools(FreehandDrawTool(renderers=[r]))
 
-    # set up a colobar + data range
-    color_mapper = LogColorMapper(palette="Cividis256", low=np.percentile(data, 55), high=np.percentile(data, 99))
+    # Create control buttons
+    button_flip_h = Button(label="Flip Horizontal", button_type="default", width=120)  # Changed from primary to default
+    button_flip_v = Button(label="Flip Vertical", button_type="default", width=120)    # Changed from primary to default
+    button_rotate_left = Button(label="Rotate Left", button_type="default", width=120) # Changed from primary to default
+    button_rotate_right = Button(label="Rotate Right", button_type="default", width=120) # Changed from primary to default
+    button_reset = Button(label="Reset Flips and Rotations", button_type="warning", width=200)  # Changed text and width
+    
+    status_h = Div(text="Horizontal Flip: Off", width=120, styles={'color': 'gray', 'font-size': '12px'})
+    status_v = Div(text="Vertical Flip: Off", width=120, styles={'color': 'gray', 'font-size': '12px'})
+    status_rot = Div(text="Rotation: 0°", width=120, styles={'color': 'gray', 'font-size': '12px'})
 
-    # must give a vector of image data for image parameter
-    fig.image(
-        image=[data],
-          x=0, y=0, dw=hdu[extension].data.shape[1], dh=hdu[extension].data.shape[0],
-          level="image", color_mapper=color_mapper
+    low_percentile = Slider(start=0, end=90, value=initial_low_percentile, step=1,
+                          title="Low Percentile", width=200)
+    high_percentile = Slider(start=95, end=100, value=initial_high_percentile, step=0.1,
+                          title="High Percentile", width=200)
+
+    update_image = CustomJS(args=dict(source=source, status_rot=status_rot), code="""
+        const rot = source.data.rotation[0];
+        const flip_h = source.data.flip_h[0];
+        const flip_v = source.data.flip_v[0];
+        
+        let flip_type = 'normal';
+        if (flip_h && flip_v) flip_type = 'hv';
+        else if (flip_h) flip_type = 'h';
+        else if (flip_v) flip_type = 'v';
+        
+        const key = 'rot' + rot + '_' + flip_type;
+        source.data.image[0] = source.data[key][0];
+        source.data.orig_x_coords[0] = source.data[key + '_x'][0];
+        source.data.orig_y_coords[0] = source.data[key + '_y'][0];
+        
+        // Update rotation status
+        status_rot.text = 'Rotation: ' + rot + '°';
+        
+        source.change.emit();
+    """)
+
+    rotate_left = CustomJS(args=dict(source=source, update_image=update_image), code="""
+        source.data.rotation[0] = (source.data.rotation[0] + 90) % 360;
+        update_image.execute();
+    """)
+
+    rotate_right = CustomJS(args=dict(source=source, update_image=update_image), code="""
+        source.data.rotation[0] = (source.data.rotation[0] - 90 + 360) % 360;
+        update_image.execute();
+    """)
+
+    flip_h_callback = CustomJS(args=dict(source=source, status=status_h, update_image=update_image, button=button_flip_h), code="""
+        source.data.flip_h[0] = !source.data.flip_h[0];
+        status.text = 'Horizontal Flip: ' + (source.data.flip_h[0] ? 'On' : 'Off');
+        status.styles = {'color': source.data.flip_h[0] ? 'green' : 'gray', 'font-size': '12px'};
+        button.button_type = source.data.flip_h[0] ? 'primary' : 'default';  // Change button color
+        update_image.execute();
+    """)
+
+    flip_v_callback = CustomJS(args=dict(source=source, status=status_v, update_image=update_image, button=button_flip_v), code="""
+        source.data.flip_v[0] = !source.data.flip_v[0];
+        status.text = 'Vertical Flip: ' + (source.data.flip_v[0] ? 'On' : 'Off');
+        status.styles = {'color': source.data.flip_v[0] ? 'green' : 'gray', 'font-size': '12px'};
+        button.button_type = source.data.flip_v[0] ? 'primary' : 'default';  // Change button color
+        update_image.execute();
+    """)
+
+    rotate_left = CustomJS(args=dict(source=source, update_image=update_image, button=button_rotate_left, button_right=button_rotate_right), code="""
+        source.data.rotation[0] = (source.data.rotation[0] + 90) % 360;
+        // Update button colors based on rotation state
+        if (source.data.rotation[0] === 0) {
+            button.button_type = 'default';
+            button_right.button_type = 'default';
+        } else {
+            button.button_type = 'primary';
+            button_right.button_type = 'primary';
+        }
+        update_image.execute();
+    """)
+
+    rotate_right = CustomJS(args=dict(source=source, update_image=update_image, button=button_rotate_right, button_left=button_rotate_left), code="""
+        source.data.rotation[0] = (source.data.rotation[0] - 90 + 360) % 360;
+        // Update button colors based on rotation state
+        if (source.data.rotation[0] === 0) {
+            button.button_type = 'default';
+            button_left.button_type = 'default';
+        } else {
+            button.button_type = 'primary';
+            button_left.button_type = 'primary';
+        }
+        update_image.execute();
+    """)
+
+    reset_callback = CustomJS(args=dict(source=source, 
+                                    status_h=status_h, 
+                                    status_v=status_v,
+                                    status_rot=status_rot,
+                                    low_percentile=low_percentile,
+                                    high_percentile=high_percentile,
+                                    color_mapper=color_mapper,
+                                    update_image=update_image,
+                                    button_h=button_flip_h,
+                                    button_v=button_flip_v,
+                                    button_left=button_rotate_left,
+                                    button_right=button_rotate_right), 
+                            code="""
+        source.data.flip_h[0] = false;
+        source.data.flip_v[0] = false;
+        source.data.rotation[0] = 0;
+        
+        // Reset all button colors
+        button_h.button_type = 'default';
+        button_v.button_type = 'default';
+        button_left.button_type = 'default';
+        button_right.button_type = 'default';
+        
+        status_h.text = 'Horizontal Flip: Off';
+        status_v.text = 'Vertical Flip: Off';
+        status_rot.text = 'Rotation: 0°';
+        status_h.styles = {'color': 'gray', 'font-size': '12px'};
+        status_v.styles = {'color': 'gray', 'font-size': '12px'};
+        
+        low_percentile.value = 55;
+        high_percentile.value = 99;
+        
+        const percentile_values = source.data.percentile_values[0];
+        const slider_to_idx = source.data.slider_to_idx[0];
+        const low_idx = slider_to_idx[55];
+        const high_idx = slider_to_idx[99];
+        
+        color_mapper.low = percentile_values[low_idx];
+        color_mapper.high = percentile_values[high_idx];
+        
+        update_image.execute();
+    """)
+
+    update_percentiles = CustomJS(args=dict(source=source,
+                                          color_mapper=color_mapper,
+                                          low_percentile=low_percentile,
+                                          high_percentile=high_percentile), 
+                                code="""
+        const percentile_values = source.data.percentile_values[0];
+        const slider_to_idx = source.data.slider_to_idx[0];
+        const low_idx = slider_to_idx[Math.round(low_percentile.value)];
+        const high_idx = slider_to_idx[Math.round(high_percentile.value * 10) / 10];
+        
+        color_mapper.low = percentile_values[low_idx];
+        color_mapper.high = percentile_values[high_idx];
+    """)
+
+    # Attach callbacks
+    button_flip_h.js_on_click(flip_h_callback)
+    button_flip_v.js_on_click(flip_v_callback)
+    button_rotate_left.js_on_click(rotate_left)
+    button_rotate_right.js_on_click(rotate_right)
+    button_reset.js_on_click(reset_callback)
+    low_percentile.js_on_change('value', update_percentiles)
+    high_percentile.js_on_change('value', update_percentiles)
+
+    # Create layout
+    percentile_controls = row(low_percentile, high_percentile, spacing=20)
+    button_controls = row(
+        column(button_flip_h, status_h),
+        column(button_flip_v, status_v),
+        column(button_rotate_left),
+        column(button_rotate_right, status_rot),
+        column(button_reset),
+        spacing=10
     )
-    fig.grid.grid_line_width = 0.5
+    layout = column(percentile_controls, button_controls, fig)
 
-    color_bar = ColorBar(color_mapper=color_mapper, ticker=LogTicker(),
-                         label_standoff=12, border_line_color=None, location=(0,0))
-
-    fig.add_layout(color_bar, 'right')
-
-    show(fig)
+    show(layout)
 
 #########################################################
 
