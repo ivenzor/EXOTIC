@@ -2439,9 +2439,9 @@ def main():
                                 }
 
                             if backtrack:
-                                for i, value in enumerate(temp_ref_flux.values()):
-                                    if value is not None and i != j:
-                                        ref_flux[i] = value
+                                for key, value in temp_ref_flux.items():
+                                    if value is not None and key != j:
+                                        ref_flux[key] = value
                                 backtrack = False
 
             log_info("\n\n*********************************************")
