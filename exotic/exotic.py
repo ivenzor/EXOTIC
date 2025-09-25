@@ -2742,7 +2742,17 @@ def main():
             log_info(f"\nError: Could not create AAVSO.txt. {error_txt}\n\t{e}", error=True)
         try:
             if vsp_params:
-                AIDoutput_files.aavso()
+                valid_params = [p for p in vsp_params if p['mag_err'] < 1]
+                removed = len(vsp_params) - len(valid_params)
+                if valid_params:
+                    if removed > 0:
+                        log_info(f"\nWarning: {removed} stellar variability data points removed due to mag_err >= 1.\n", warn=True)
+                    AIDoutput_files.aavso()
+                else:
+                    log_info("\nWarning: No valid stellar variability points left after filtering mag_err >= 1. "
+                            "AID_AAVSO.txt not created.\n", warn=True)
+            else:
+                log_info("\nWarning: No vsp_params available. AID_AAVSO.txt not created.\n", warn=True)
         except Exception as e:
             log_info(f"\nError: Could not create AID_AAVSO.txt. {error_txt}\n\t{e}", error=True)
         try:
