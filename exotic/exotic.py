@@ -1708,14 +1708,37 @@ def fit_lightcurve(times, tFlux, cFlux, airmass, ld, pDict, jd_times=None):
     arrayJDTimes = jd_times[si][~filtered_data]
     arrayAirmass = airmass[si][~filtered_data]
 
-    # remove nans
-    nanmask = np.isnan(arrayFinalFlux) | np.isnan(arrayNormUnc) | np.isnan(arrayTimes) | np.isnan(
-        arrayAirmass) | np.less_equal(arrayFinalFlux, 0) | np.less_equal(arrayNormUnc, 0)
-    nanmask = nanmask | np.isinf(arrayFinalFlux) | np.isinf(arrayNormUnc) | np.isinf(arrayTimes) | np.isinf(
-        arrayAirmass)
-
-    if np.sum(~nanmask) <= 1:
-        log_info('No data left after filtering', warn=True)
+    # Identify filtering reasons
+    is_nan_flux = np.isnan(arrayFinalFlux)
+    is_nan_unc = np.isnan(arrayNormUnc)
+    is_nan_time = np.isnan(arrayTimes)
+    is_nan_airmass = np.isnan(arrayAirmass)
+    is_inf_flux = np.isinf(arrayFinalFlux)
+    is_inf_unc = np.isinf(arrayNormUnc)
+    is_inf_time = np.isinf(arrayTimes)
+    is_inf_airmass = np.isinf(arrayAirmass)
+    is_zero_flux = arrayFinalFlux <= 0
+    is_zero_unc = arrayNormUnc <= 0
+    
+    # Combine all filters
+    nanmask = (
+        is_nan_flux | is_nan_unc | is_nan_time | is_nan_airmass |
+        is_inf_flux | is_inf_unc | is_inf_time | is_inf_airmass |
+        is_zero_flux | is_zero_unc
+    )
+    
+    remaining = np.sum(~nanmask)
+    if remaining <= 1:
+        log_info(
+            f"No data left after filtering:\n"
+            f"  NaN values:          flux: {np.sum(is_nan_flux)},  unc: {np.sum(is_nan_unc)},  "
+            f"time: {np.sum(is_nan_time)},  airmass: {np.sum(is_nan_airmass)}\n"
+            f"  Inf values:          flux: {np.sum(is_inf_flux)},  unc: {np.sum(is_inf_unc)},  "
+            f"time: {np.sum(is_inf_time)},  airmass: {np.sum(is_inf_airmass)}\n"
+            f"  Non-positive values: flux: {np.sum(is_zero_flux)},  unc: {np.sum(is_zero_unc)}\n"
+            f"  Total removed: {np.sum(nanmask)},  Remaining: {remaining}",
+            warn=True
+        )
         return None, None, None
     else:
         arrayFinalFlux = arrayFinalFlux[~nanmask]
