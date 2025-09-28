@@ -2766,7 +2766,7 @@ def main():
                     log_info("\nWarning: No valid stellar variability points left after filtering mag_err >= 1. "
                             "AID_AAVSO.txt not created.\n", warn=True)
             else:
-                log_info("\nWarning: No vsp_params available. AID_AAVSO.txt not created.\n", warn=True)
+                log_info("\nWarning: No stellar variability (vsp_params) available. AID_AAVSO.txt not created.\n", warn=True)
         except Exception as e:
             log_info(f"\nError: Could not create AID_AAVSO.txt. {error_txt}\n\t{e}", error=True)
         try:
