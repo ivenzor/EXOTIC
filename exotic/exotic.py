@@ -1440,6 +1440,20 @@ def choose_comp_star_variability(fit_lc_refs, fit_lc_best, ref_comp, comp_stars,
     plot_variable_residuals(save)
 
     std_devs = {key: np.std(value['res']) for key, value in ref_comp.items() if value}
+    if not std_devs:
+        # Diagnose cause for clearer error message
+        oot_best = np.sum(fit_lc_best.transit == 1)
+        oot_comps = [np.sum(fit_lc_refs[ckey]['myfit'].transit == 1) for ckey in fit_lc_refs]
+
+        if oot_best == 0:
+            msg = "Target star has no out-of-transit data."
+        elif all(count == 0 for count in oot_comps):
+            msg = "Comparison stars have no out-of-transit data."
+        else:
+            msg = "No overlapping out-of-transit timestamps between target star and comps."
+        # Raise ValueError so caller can log and return []
+        raise ValueError(msg)
+
     min_std_dev = min(std_devs, key=lambda y: abs(std_devs[y]))
 
     return comp_stars[min_std_dev]
